@@ -1,0 +1,77 @@
+
+name: Build Swift Launcher APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-from-zip.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Project ZIP not found"
+            exit 1
+          fi
+          mkdir extracted
+          unzip -q "$ZIP_FILE" -d extracted
+          PROJECT_DIR="$(find extracted -type f -name settings.gradle.kts -print -quit | xargs dirname)"
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Gradle project not found inside ZIP"
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-linux-androideabi,aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build Rust libraries
+        working-directory: ${{ env.PROJECT_DIR }}/rust
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          cargo ndk -t armeabi-v7a -t arm64-v8a -o ../app/src/main/jniLibs build --release
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftLauncher-APK-ARMv7-ARM64
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
